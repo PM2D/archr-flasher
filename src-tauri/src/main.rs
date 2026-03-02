@@ -10,6 +10,12 @@ use disk::DiskInfo;
 use panels::Panel;
 use github::ReleaseInfo;
 
+/// Returns the OS locale (e.g. "pt-BR", "en-US") for i18n.
+#[tauri::command]
+fn get_locale() -> String {
+    sys_locale::get_locale().unwrap_or_else(|| "en".to_string())
+}
+
 #[tauri::command]
 fn get_panels(console: &str) -> Vec<Panel> {
     panels::get_panels(console)
@@ -61,6 +67,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            get_locale,
             get_panels,
             list_disks,
             check_latest_release,

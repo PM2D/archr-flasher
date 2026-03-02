@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,59 +10,59 @@
   <div class="container">
     <!-- Header -->
     <header>
-      <h1><span class="arch">ARCH</span> <span class="r">R</span> <span class="flasher">FLASHER</span></h1>
+      <h1><span class="arch">ARCH</span> <span class="r">R</span> <span class="flasher" data-i18n="title_flasher">FLASHER</span></h1>
     </header>
 
     <!-- Image info -->
     <section class="section" id="image-section">
-      <label class="section-label">Imagem</label>
+      <label class="section-label" data-i18n="image">Image</label>
       <div class="image-info" id="image-info">
-        <span id="image-name">Nenhuma imagem selecionada</span>
+        <span id="image-name" data-i18n="no_image">No image selected</span>
         <span id="image-version" class="tag"></span>
       </div>
       <div class="image-actions">
-        <button class="btn-secondary" id="btn-select-file">Selecionar arquivo</button>
-        <button class="btn-secondary" id="btn-download">Baixar ultima versao</button>
+        <button class="btn-secondary" id="btn-select-file" data-i18n="select_file">Select file</button>
+        <button class="btn-secondary" id="btn-download" data-i18n="download_latest">Download latest version</button>
       </div>
     </section>
 
     <!-- Console selection -->
     <section class="section">
-      <label class="section-label">1. Console</label>
+      <label class="section-label" data-i18n="console">1. Console</label>
       <div class="console-buttons">
         <button class="console-btn" id="btn-original" data-console="original">
-          <strong>R36S Original</strong>
-          <small>6 paineis</small>
+          <strong data-i18n="original_name">R36S Original</strong>
+          <small data-i18n="original_desc">6 panels</small>
         </button>
         <button class="console-btn" id="btn-clone" data-console="clone">
-          <strong>R36S Clone</strong>
-          <small>12 paineis</small>
+          <strong data-i18n="clone_name">R36S Clone</strong>
+          <small data-i18n="clone_desc">12 panels</small>
         </button>
       </div>
     </section>
 
     <!-- Panel selection -->
     <section class="section" id="panel-section" style="display: none;">
-      <label class="section-label">2. Painel</label>
+      <label class="section-label" data-i18n="panel">2. Panel</label>
       <select id="panel-select" class="select">
-        <option value="">Selecione o painel</option>
+        <option value="" data-i18n="select_panel">Select panel</option>
       </select>
     </section>
 
     <!-- Destination -->
     <section class="section" id="disk-section" style="display: none;">
-      <label class="section-label">3. Destino</label>
+      <label class="section-label" data-i18n="destination">3. Destination</label>
       <div class="disk-row">
         <select id="disk-select" class="select">
-          <option value="">Selecione o SD card</option>
+          <option value="" data-i18n="select_sd">Select SD card</option>
         </select>
-        <button class="btn-icon" id="btn-refresh-disks" title="Atualizar lista">&#x21bb;</button>
+        <button class="btn-icon" id="btn-refresh-disks" data-i18n-title="refresh_tooltip" title="Refresh list">&#x21bb;</button>
       </div>
     </section>
 
     <!-- Flash button -->
     <section class="section" id="flash-section" style="display: none;">
-      <button class="btn-flash" id="btn-flash" disabled>GRAVAR</button>
+      <button class="btn-flash" id="btn-flash" disabled data-i18n="flash">FLASH</button>
     </section>
 
     <!-- Progress -->
@@ -83,12 +83,12 @@
   <!-- Confirmation dialog -->
   <div class="dialog-overlay" id="confirm-dialog" style="display: none;">
     <div class="dialog">
-      <h3>Confirmar gravacao</h3>
+      <h3 data-i18n="confirm_title">Confirm flash</h3>
       <p id="confirm-text"></p>
-      <p class="warning">TODOS OS DADOS DO SD SERAO APAGADOS!</p>
+      <p class="warning" data-i18n="confirm_warning">ALL DATA ON THE SD CARD WILL BE ERASED!</p>
       <div class="dialog-buttons">
-        <button class="btn-secondary" id="btn-cancel">Cancelar</button>
-        <button class="btn-danger" id="btn-confirm">Gravar</button>
+        <button class="btn-secondary" id="btn-cancel" data-i18n="cancel">Cancel</button>
+        <button class="btn-danger" id="btn-confirm" data-i18n="confirm">Flash</button>
       </div>
     </div>
   </div>
