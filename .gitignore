@@ -1,0 +1,18 @@
+# Rust
+/src-tauri/target/
+**/*.rs.bk
+
+# Node
+node_modules/
+
+# Tauri
+/src-tauri/WixTools/
+/src-tauri/icons/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
