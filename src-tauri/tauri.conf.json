@@ -42,7 +42,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZFQzJGNDk5QjdCMDQ3NzEKUldSeFI3QzNtZlRDL3NLV25oWE13UlpmOFRsTkJLY2dtQ3lmanV0MkJuT0RuTm9YVXRmTmg2a3YK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM3RUU4ODFERTU1RDQxMUIKUldRYlFWM2xIWWp1TjQ0TnVJNnFhUlNMcEFHcG9xeWJucEI0S1VTVTBJR1puQm1YTlMxcnBkN0MK",
       "endpoints": [
         "https://github.com/archr-linux/archr-flasher/releases/latest/download/latest.json"
       ],
