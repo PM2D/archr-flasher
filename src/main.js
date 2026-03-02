@@ -17,11 +17,11 @@ async function initI18n() {
       locale = SUPPORTED_LOCALES.find(l => l.startsWith(langPart)) || 'en';
     }
 
-    const resp = await fetch(`../assets/i18n/${locale}.json`);
+    const resp = await fetch(`i18n/${locale}.json`);
     lang = await resp.json();
   } catch (e) {
     try {
-      const resp = await fetch('../assets/i18n/en.json');
+      const resp = await fetch('i18n/en.json');
       lang = await resp.json();
     } catch (_) {
       lang = {};

@@ -17,6 +17,40 @@ fn emit_progress(app: &AppHandle, percent: f64, stage: &str) {
     });
 }
 
+/// Re-validate the device is a valid removable disk before flashing.
+/// Prevents writing to a device that was removed or swapped since selection.
+fn validate_device(device: &str) -> Result<(), String> {
+    if device.is_empty() {
+        return Err("No device specified".into());
+    }
+
+    // Basic path validation: must be a block device path
+    if !device.starts_with("/dev/") && !device.starts_with("\\\\.\\") {
+        return Err(format!("Invalid device path: {}", device));
+    }
+
+    // On Linux/macOS: verify the device still exists
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        if !Path::new(device).exists() {
+            return Err("Device not found. Was the SD card removed?".into());
+        }
+    }
+
+    // On Linux: verify it's still a removable disk (not system disk)
+    #[cfg(target_os = "linux")]
+    {
+        let dev_name = device.trim_start_matches("/dev/");
+        let sys_path = format!("/sys/block/{}/removable", dev_name);
+        let removable = fs::read_to_string(&sys_path).unwrap_or_default();
+        if removable.trim() != "1" {
+            return Err(format!("{} is not a removable device", device));
+        }
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Linux: pkexec + helper script
 // ---------------------------------------------------------------------------
@@ -32,6 +66,8 @@ pub fn flash_image_privileged(
     use std::process::Command;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
+
+    validate_device(device)?;
 
     let is_xz = image_path.ends_with(".xz");
 
@@ -179,6 +215,8 @@ pub fn flash_image_privileged(
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
+    validate_device(device)?;
+
     let is_xz = image_path.ends_with(".xz");
 
     // Step 1: Decompress .xz in user space (with progress)
@@ -206,10 +244,14 @@ pub fn flash_image_privileged(
     // Step 4: Run via osascript with administrator privileges
     emit_progress(app, 60.0, "writing");
 
+    // Sanitize all values for AppleScript single-quote context:
+    // escape ' → '\'' (end quote, literal quote, reopen quote)
+    let esc = |s: &str| s.replace('\'', "'\\''");
     let cmd = format!(
         "do shell script \"bash '{}' '{}' '{}' '{}' '{}' '{}'\" with administrator privileges",
-        script_path.display(),
-        img_to_flash.display(), device, panel_dtb, panel_id, variant
+        esc(&script_path.display().to_string()),
+        esc(&img_to_flash.display().to_string()),
+        esc(device), esc(panel_dtb), esc(panel_id), esc(variant)
     );
 
     let output = Command::new("osascript")

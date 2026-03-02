@@ -144,8 +144,10 @@ pub fn list_removable_disks() -> Vec<DiskInfo> {
 
     let mut disks = Vec::new();
 
+    // Use plain text output (not -plist XML) to list external disks.
+    // Output format: "/dev/disk2 (external, physical):" as header lines.
     let output = Command::new("diskutil")
-        .args(["list", "-plist", "external"])
+        .args(["list", "external"])
         .output();
 
     let output = match output {
@@ -153,47 +155,53 @@ pub fn list_removable_disks() -> Vec<DiskInfo> {
         Err(_) => return disks,
     };
 
-    // Parse plist output for disk names
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut device_names: Vec<String> = Vec::new();
+
     for line in stdout.lines() {
         let line = line.trim();
-        if line.starts_with("/dev/disk") {
-            let device = line.to_string();
+        // Match lines like: "/dev/disk2 (external, physical):"
+        if line.starts_with("/dev/disk") && line.contains("external") {
+            if let Some(dev) = line.split_whitespace().next() {
+                device_names.push(dev.to_string());
+            }
+        }
+    }
 
-            // Get info for this disk
-            let info_output = Command::new("diskutil")
-                .args(["info", &device])
-                .output();
+    for device in device_names {
+        // Get detailed info for each disk
+        let info_output = Command::new("diskutil")
+            .args(["info", &device])
+            .output();
 
-            if let Ok(info) = info_output {
-                let info_str = String::from_utf8_lossy(&info.stdout);
-                let mut size_bytes: u64 = 0;
-                let mut name = "SD Card".to_string();
+        if let Ok(info) = info_output {
+            let info_str = String::from_utf8_lossy(&info.stdout);
+            let mut size_bytes: u64 = 0;
+            let mut name = "SD Card".to_string();
 
-                for info_line in info_str.lines() {
-                    if info_line.contains("Disk Size:") {
-                        // Extract byte count from parenthetical
-                        if let Some(start) = info_line.find('(') {
-                            if let Some(end) = info_line.find(" Bytes") {
-                                let num_str = &info_line[start + 1..end];
-                                let num_str = num_str.replace(',', "").replace(' ', "");
-                                size_bytes = num_str.parse().unwrap_or(0);
-                            }
+            for info_line in info_str.lines() {
+                if info_line.contains("Disk Size:") {
+                    // Extract byte count: "Disk Size:   31.9 GB (31914983424 Bytes)"
+                    if let Some(start) = info_line.find('(') {
+                        if let Some(end) = info_line.find(" Bytes") {
+                            let num_str = &info_line[start + 1..end];
+                            let num_str = num_str.replace(',', "").replace(' ', "");
+                            size_bytes = num_str.parse().unwrap_or(0);
                         }
                     }
-                    if info_line.contains("Device / Media Name:") {
-                        name = info_line.split(':').nth(1).unwrap_or("SD Card").trim().to_string();
-                    }
                 }
+                if info_line.contains("Device / Media Name:") {
+                    name = info_line.split(':').nth(1).unwrap_or("SD Card").trim().to_string();
+                }
+            }
 
-                if size_bytes > 0 && size_bytes <= 128 * 1_000_000_000 {
-                    disks.push(DiskInfo {
-                        device,
-                        name: format!("{} ({})", name, format_size(size_bytes)),
-                        size_bytes,
-                        size_human: format_size(size_bytes),
-                    });
-                }
+            if size_bytes > 0 && size_bytes <= 128 * 1_000_000_000 {
+                disks.push(DiskInfo {
+                    device,
+                    name: format!("{} ({})", name, format_size(size_bytes)),
+                    size_bytes,
+                    size_human: format_size(size_bytes),
+                });
             }
         }
     }
