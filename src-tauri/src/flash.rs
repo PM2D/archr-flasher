@@ -509,13 +509,15 @@ pub fn flash_image_privileged(
     panel_id: &str,
     variant: &str,
 ) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
 
     validate_device(device)?;
 
     let is_xz = image_path.ends_with(".xz");
 
-    // Check temp space before decompression
     if is_xz {
         check_temp_space(image_path)?;
     }
@@ -530,37 +532,35 @@ pub fn flash_image_privileged(
         PathBuf::from(image_path)
     };
 
-    // Get decompressed image size for progress tracking
     let image_size = fs::metadata(&img_to_flash)
         .map(|m| m.len()).unwrap_or(0);
 
-    // Step 2: Write helper script and params to temp
-    let script_path = std::env::temp_dir().join("archr-flash.ps1");
-    fs::write(&script_path, FLASH_SCRIPT_WINDOWS)
-        .map_err(|e| format!("Cannot write helper script: {}", e))?;
+    // Step 2: Generate self-contained PS1 script with embedded absolute paths
+    // (no $env:TEMP references — avoids path mismatch in elevated UAC context)
+    let temp = std::env::temp_dir();
+    let script_path = temp.join("archr-flash.ps1");
+    let progress_file = temp.join("archr-flash-progress");
+    let result_file = temp.join("archr-flash-result.txt");
+    let log_file = temp.join("archr-flash-log.txt");
 
-    let progress_file = std::env::temp_dir().join("archr-flash-progress");
+    for f in [&result_file, &log_file, &progress_file] {
+        let _ = fs::remove_file(f);
+    }
     fs::write(&progress_file, "0").ok();
 
-    let params_path = std::env::temp_dir().join("archr-flash-params.json");
-    let params = serde_json::json!({
-        "image": img_to_flash.to_string_lossy().to_string(),
-        "device": device,
-        "panel_dtb": panel_dtb,
-        "panel_id": panel_id,
-        "variant": variant,
-        "progress_file": progress_file.to_string_lossy().to_string(),
-    });
-    let params_json = serde_json::to_string(&params)
-        .map_err(|e| format!("Cannot serialize params: {}", e))?;
-    fs::write(&params_path, params_json)
-        .map_err(|e| format!("Cannot write params: {}", e))?;
+    let script_content = generate_windows_script(
+        &img_to_flash.to_string_lossy(),
+        device,
+        panel_dtb,
+        panel_id,
+        variant,
+        &progress_file.to_string_lossy(),
+        &result_file.to_string_lossy(),
+    );
+    fs::write(&script_path, &script_content)
+        .map_err(|e| format!("Cannot write flash script: {}", e))?;
 
-    // Step 3: Log file for the elevated process (its console is invisible)
-    let log_file = std::env::temp_dir().join("archr-flash-log.txt");
-    let _ = fs::remove_file(&log_file);
-
-    // Step 4: Run elevated via UAC (Start-Process -Verb RunAs triggers UAC prompt)
+    // Step 3: Run elevated via UAC
     emit_progress(app, 60.0, "writing");
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -568,7 +568,7 @@ pub fn flash_image_privileged(
         app.clone(), progress_file.clone(), image_size, stop.clone(),
     );
 
-    // Encode script path for PowerShell — use -EncodedCommand to avoid path escaping issues
+    // EncodedCommand avoids path escaping issues in the elevated process
     let inner_cmd = format!(
         "Set-ExecutionPolicy Bypass -Scope Process -Force; & '{}' *> '{}'",
         script_path.display().to_string().replace('\'', "''"),
@@ -582,152 +582,183 @@ pub fn flash_image_privileged(
         base64::engine::general_purpose::STANDARD.encode(&utf16)
     };
 
+    // Outer launcher: Start-Process -Verb RunAs triggers UAC, -WindowStyle Hidden
+    // hides the elevated PowerShell window after the user accepts UAC.
     let launcher_cmd = format!(
         "try {{ $p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile','-EncodedCommand','{}'); if ($p) {{ exit $p.ExitCode }} else {{ exit 1 }} }} catch {{ exit 1 }}",
         encoded
     );
 
-    let child = Command::new("powershell")
+    // CREATE_NO_WINDOW prevents the outer PowerShell from showing a console window
+    let output = Command::new("powershell")
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &launcher_cmd])
+        .creation_flags(CREATE_NO_WINDOW)
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to run PowerShell: {}", e))?;
-
-    let output = child.wait_with_output()
+        .map_err(|e| format!("Failed to run PowerShell: {}", e))?
+        .wait_with_output()
         .map_err(|e| format!("Failed to wait for PowerShell: {}", e))?;
 
-    // Stop polling thread
     stop.store(true, Ordering::Relaxed);
     let _ = poll_handle.join();
 
-    // Read the elevated process log for error details
+    // Check result via marker file (more reliable than exit code through UAC layers)
+    let result = fs::read_to_string(&result_file).unwrap_or_default();
     let log_content = fs::read_to_string(&log_file).unwrap_or_default();
 
     // Cleanup temp files
-    let _ = fs::remove_file(&script_path);
-    let _ = fs::remove_file(&params_path);
-    let _ = fs::remove_file(&progress_file);
-    let _ = fs::remove_file(&log_file);
+    for f in [&script_path, &progress_file, &result_file, &log_file] {
+        let _ = fs::remove_file(f);
+    }
     if is_xz {
         let _ = fs::remove_file(&img_to_flash);
     }
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let combined = format!("{}{}{}", stderr, stdout, log_content);
-        if combined.contains("canceled") || combined.contains("cancelled")
-            || combined.contains("The operation was canceled") {
-            return Err("cancelled".into());
-        }
-        let error_msg = if !log_content.trim().is_empty() {
-            log_content.trim().to_string()
-        } else {
-            format!("{}{}", stderr.trim(), stdout.trim())
-        };
-        return Err(format!("Flash failed: {}", error_msg));
+    // Success: the PS1 script writes "OK" to result_file on completion
+    if result.trim() == "OK" {
+        emit_progress(app, 95.0, "syncing");
+        emit_progress(app, 100.0, "done");
+        return Ok(());
     }
 
-    emit_progress(app, 95.0, "syncing");
-    emit_progress(app, 100.0, "done");
+    // Failure: check for user cancellation vs real error
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{}{}", log_content, stderr);
+    if combined.contains("canceled") || combined.contains("cancelled")
+        || combined.contains("The operation was canceled") {
+        return Err("cancelled".into());
+    }
 
-    Ok(())
+    let error_msg = if result.trim().is_empty() && log_content.trim().is_empty() {
+        if !stderr.trim().is_empty() {
+            stderr.trim().to_string()
+        } else {
+            "Flash process failed without error details".to_string()
+        }
+    } else if !result.trim().is_empty() && result.trim() != "OK" {
+        // Script caught an error and wrote it to result_file
+        result.trim().to_string()
+    } else {
+        log_content.trim().to_string()
+    };
+    Err(format!("Flash failed: {}", error_msg))
 }
 
+/// Generate a self-contained PowerShell script with all parameters embedded as
+/// absolute paths. This avoids any dependency on $env:TEMP matching between the
+/// non-elevated Rust process and the elevated UAC PowerShell context.
 #[cfg(target_os = "windows")]
-const FLASH_SCRIPT_WINDOWS: &str = r#"
-$ErrorActionPreference = "Stop"
-try {
-    $paramsFile = Join-Path $env:TEMP "archr-flash-params.json"
-    $params = Get-Content $paramsFile -Raw | ConvertFrom-Json
-    $ImagePath = $params.image
-    $Device = $params.device
-    $PanelDTB = $params.panel_dtb
-    $PanelID = $params.panel_id
-    $Variant = $params.variant
-    $ProgressFile = $params.progress_file
+fn generate_windows_script(
+    image_path: &str,
+    device: &str,
+    panel_dtb: &str,
+    panel_id: &str,
+    variant: &str,
+    progress_file: &str,
+    result_file: &str,
+) -> String {
+    // Escape single quotes for PowerShell single-quoted strings (double them)
+    let esc = |s: &str| s.replace('\'', "''");
+    format!(
+        r#"$ErrorActionPreference = "Stop"
+try {{
+    $ImagePath = '{image}'
+    $Device = '{device}'
+    $PanelDTB = '{panel_dtb}'
+    $PanelID = '{panel_id}'
+    $Variant = '{variant}'
+    $ProgressFile = '{progress}'
+    $ResultFile = '{result}'
 
-    # Extract disk number from \\.\PhysicalDriveN
     $diskNum = [int]([regex]::Match($Device, '\d+$').Value)
 
-    # Step 1: Take disk offline, clean via diskpart script file (pipe is unreliable)
+    # Clean disk via diskpart (script file — pipe is unreliable in PS)
     $dpScript = Join-Path $env:TEMP "archr-diskpart.txt"
-    "select disk $diskNum`r`noffline disk`r`nonline disk`r`nclean" | Out-File -Encoding ascii $dpScript
-    $dpOut = & diskpart /s $dpScript 2>&1
+    @("select disk $diskNum", "clean") | Out-File -Encoding ascii $dpScript
+    & diskpart /s $dpScript 2>&1 | Out-Null
     Remove-Item $dpScript -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
+    Start-Sleep -Seconds 3
 
-    # Step 2: Write raw image to physical drive via .NET FileStream
+    # Write raw image via .NET FileStream (retry on device lock)
     $bufSize = 4 * 1024 * 1024
     $buf = New-Object byte[] $bufSize
     $totalWritten = [long]0
     $lastReport = [System.Diagnostics.Stopwatch]::StartNew()
 
-    $src = [System.IO.FileStream]::new(
-        $ImagePath,
-        [System.IO.FileMode]::Open,
-        [System.IO.FileAccess]::Read,
-        [System.IO.FileShare]::Read,
-        $bufSize
-    )
-    # Open physical drive for raw write
-    $dst = [System.IO.FileStream]::new(
-        $Device,
-        [System.IO.FileMode]::Open,
-        [System.IO.FileAccess]::Write,
-        [System.IO.FileShare]::ReadWrite,
-        $bufSize
-    )
+    $src = $null
+    $dst = $null
+    for ($retry = 0; $retry -lt 3; $retry++) {{
+        try {{
+            $src = [System.IO.FileStream]::new(
+                $ImagePath,
+                [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::Read,
+                [System.IO.FileShare]::Read,
+                $bufSize
+            )
+            $dst = [System.IO.FileStream]::new(
+                $Device,
+                [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::Write,
+                [System.IO.FileShare]::ReadWrite,
+                $bufSize
+            )
+            break
+        }} catch {{
+            if ($src) {{ $src.Dispose(); $src = $null }}
+            if ($retry -eq 2) {{ throw }}
+            Start-Sleep -Seconds 3
+        }}
+    }}
 
-    try {
-        while (($read = $src.Read($buf, 0, $bufSize)) -gt 0) {
+    try {{
+        while (($read = $src.Read($buf, 0, $bufSize)) -gt 0) {{
             $dst.Write($buf, 0, $read)
             $totalWritten += $read
-            if ($lastReport.ElapsedMilliseconds -ge 500) {
+            if ($lastReport.ElapsedMilliseconds -ge 500) {{
                 [System.IO.File]::WriteAllText($ProgressFile, $totalWritten.ToString())
                 $lastReport.Restart()
-            }
-        }
+            }}
+        }}
         $dst.Flush()
-    } finally {
-        $src.Dispose()
-        $dst.Dispose()
-    }
+    }} finally {{
+        if ($src) {{ $src.Dispose() }}
+        if ($dst) {{ $dst.Dispose() }}
+    }}
 
-    # Step 3: Rescan disks to detect new partition table
+    # Rescan to detect new partition table
     $dpScript2 = Join-Path $env:TEMP "archr-diskpart2.txt"
     "rescan" | Out-File -Encoding ascii $dpScript2
     & diskpart /s $dpScript2 2>&1 | Out-Null
     Remove-Item $dpScript2 -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 3
 
-    # Step 4: Find boot partition (FAT32, partition 1) and mount it
+    # Find and mount boot partition
     $bootPart = Get-Partition -DiskNumber $diskNum -PartitionNumber 1 -ErrorAction SilentlyContinue
-
-    if ($bootPart -and (-not $bootPart.DriveLetter -or $bootPart.DriveLetter -eq [char]0)) {
+    if ($bootPart -and (-not $bootPart.DriveLetter -or $bootPart.DriveLetter -eq [char]0)) {{
         $bootPart | Add-PartitionAccessPath -AssignDriveLetter -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
         $bootPart = Get-Partition -DiskNumber $diskNum -PartitionNumber 1 -ErrorAction SilentlyContinue
-    }
+    }}
 
-    if (-not ($bootPart -and $bootPart.DriveLetter -and $bootPart.DriveLetter -ne [char]0)) {
+    if (-not ($bootPart -and $bootPart.DriveLetter -and $bootPart.DriveLetter -ne [char]0)) {{
         throw "Could not mount boot partition to configure panel"
-    }
+    }}
 
     $bootDrive = "$($bootPart.DriveLetter):\"
-    if (-not (Test-Path $bootDrive)) {
+    if (-not (Test-Path $bootDrive)) {{
         throw "Boot partition drive $bootDrive not accessible"
-    }
+    }}
 
     # Copy selected panel DTB as kernel.dtb
     $panelFile = Join-Path $bootDrive $PanelDTB
-    if (-not (Test-Path $panelFile)) {
+    if (-not (Test-Path $panelFile)) {{
         throw "Panel DTB $PanelDTB not found in image"
-    }
+    }}
     Copy-Item $panelFile (Join-Path $bootDrive "kernel.dtb") -Force
 
-    # Write panel configuration (UTF-8, no BOM)
+    # Write panel configuration (UTF-8 no BOM)
     $enc = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText(
         (Join-Path $bootDrive "panel.txt"),
@@ -745,9 +776,22 @@ try {
         $enc
     )
 
+    # Success marker — Rust checks this file instead of relying on exit codes through UAC
+    [System.IO.File]::WriteAllText($ResultFile, "OK")
     exit 0
-} catch {
+}} catch {{
+    # Write error to result file so Rust can show it to the user
+    try {{ [System.IO.File]::WriteAllText($ResultFile, $_.Exception.Message) }} catch {{}}
     Write-Error $_.Exception.Message
     exit 1
+}}
+"#,
+        image = esc(image_path),
+        device = esc(device),
+        panel_dtb = esc(panel_dtb),
+        panel_id = esc(panel_id),
+        variant = esc(variant),
+        progress = esc(progress_file),
+        result = esc(result_file),
+    )
 }
-"#;
