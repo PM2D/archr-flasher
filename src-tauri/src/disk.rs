@@ -1,6 +1,4 @@
 use serde::Serialize;
-use std::fs;
-use std::path::Path;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DiskInfo {
@@ -22,6 +20,9 @@ fn format_size(bytes: u64) -> String {
 
 #[cfg(target_os = "linux")]
 pub fn list_removable_disks() -> Vec<DiskInfo> {
+    use std::fs;
+    use std::path::Path;
+
     let mut disks = Vec::new();
     let system_disks = get_system_disk_names();
 
@@ -93,6 +94,8 @@ pub fn list_removable_disks() -> Vec<DiskInfo> {
 /// Returns the parent disk names (e.g. "sda" from "/dev/sda1", "nvme0n1" from "/dev/nvme0n1p2").
 #[cfg(target_os = "linux")]
 fn get_system_disk_names() -> Vec<String> {
+    use std::fs;
+
     let mut names = Vec::new();
     let mounts = fs::read_to_string("/proc/mounts").unwrap_or_default();
 
