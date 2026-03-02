@@ -251,6 +251,11 @@ PANEL_ID="$4"
 VARIANT="$5"
 PROGRESS_FILE="$6"
 
+# Unmount all partitions on the device before writing
+for part in "${DEVICE}"*; do
+    umount "$part" 2>/dev/null || true
+done
+
 # Write raw image to device with progress tracking
 IMAGE_SIZE=$(stat -c%s "$IMAGE")
 dd if="$IMAGE" of="$DEVICE" bs=4M conv=fsync status=none &
@@ -365,19 +370,23 @@ pub fn flash_image_privileged(
     );
 
     // Step 5: Run via osascript with administrator privileges
-    // Sanitize all values for AppleScript single-quote context:
-    // escape ' → '\'' (end quote, literal quote, reopen quote)
-    let esc = |s: &str| s.replace('\'', "'\\''");
-    let cmd = format!(
-        "do shell script \"bash '{}' '{}' '{}' '{}' '{}' '{}' '{}'\" with administrator privileges",
-        esc(&script_path.display().to_string()),
-        esc(&img_to_flash.display().to_string()),
-        esc(device), esc(panel_dtb), esc(panel_id), esc(variant),
-        esc(&progress_file.display().to_string())
+    // Build shell command with proper escaping for AppleScript context:
+    // AppleScript do shell script uses double-quoted strings — escape \ and "
+    let shell_esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"").replace('\'', "'\\''");
+    let shell_cmd = format!(
+        "bash '{}' '{}' '{}' '{}' '{}' '{}' '{}'",
+        shell_esc(&script_path.display().to_string()),
+        shell_esc(&img_to_flash.display().to_string()),
+        shell_esc(device), shell_esc(panel_dtb), shell_esc(panel_id), shell_esc(variant),
+        shell_esc(&progress_file.display().to_string())
+    );
+    let applescript = format!(
+        "do shell script \"{}\" with administrator privileges",
+        shell_cmd.replace('\\', "\\\\").replace('"', "\\\"")
     );
 
     let child = Command::new("osascript")
-        .args(["-e", &cmd])
+        .args(["-e", &applescript])
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("osascript error: {}", e))?;
@@ -448,13 +457,16 @@ rm -f "$DD_STDERR"
 
 sync
 
-# Re-mount disk so we can access boot partition
-sleep 2
-diskutil mountDisk "$DEVICE" 2>/dev/null || true
-sleep 1
-
-# Find the mounted boot partition (FAT32, typically partition 1)
-BOOT_VOL=$(diskutil info "${DEVICE}s1" 2>/dev/null | grep "Mount Point:" | awk -F: '{print $2}' | xargs)
+# Re-mount disk so we can access boot partition (retry up to 3 times)
+BOOT_VOL=""
+for i in 1 2 3; do
+    sleep 2
+    diskutil mountDisk "$DEVICE" 2>/dev/null || true
+    sleep 1
+    BOOT_VOL=$(diskutil info "${DEVICE}s1" 2>/dev/null | grep "Mount Point:" | awk -F: '{print $2}' | xargs)
+    [ -n "$BOOT_VOL" ] && [ -d "$BOOT_VOL" ] && break
+    BOOT_VOL=""
+done
 
 if [ -n "$BOOT_VOL" ] && [ -d "$BOOT_VOL" ]; then
     # Copy selected panel DTB as kernel.dtb
@@ -468,6 +480,9 @@ if [ -n "$BOOT_VOL" ] && [ -d "$BOOT_VOL" ]; then
     echo "$VARIANT" > "$BOOT_VOL/variant"
 
     sync
+else
+    echo "WARNING: Could not mount boot partition to write panel config." >&2
+    echo "Image was written successfully. Panel selection may need to be done on device." >&2
 fi
 
 # Eject disk safely
