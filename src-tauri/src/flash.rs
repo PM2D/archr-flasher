@@ -498,7 +498,8 @@ diskutil eject "$DEVICE" 2>/dev/null || true
 "#;
 
 // ---------------------------------------------------------------------------
-// Windows: privilege escalation via UAC
+// Windows: admin manifest provides elevation at startup (like Rufus).
+// No runtime UAC, no PowerShell elevation layers, no visible windows.
 // ---------------------------------------------------------------------------
 #[cfg(target_os = "windows")]
 pub fn flash_image_privileged(
@@ -535,17 +536,12 @@ pub fn flash_image_privileged(
     let image_size = fs::metadata(&img_to_flash)
         .map(|m| m.len()).unwrap_or(0);
 
-    // Step 2: Generate self-contained PS1 script with embedded absolute paths
-    // (no $env:TEMP references — avoids path mismatch in elevated UAC context)
+    // Step 2: Generate PS1 script with embedded absolute paths
     let temp = std::env::temp_dir();
     let script_path = temp.join("archr-flash.ps1");
     let progress_file = temp.join("archr-flash-progress");
-    let result_file = temp.join("archr-flash-result.txt");
-    let log_file = temp.join("archr-flash-log.txt");
 
-    for f in [&result_file, &log_file, &progress_file] {
-        let _ = fs::remove_file(f);
-    }
+    let _ = fs::remove_file(&progress_file);
     fs::write(&progress_file, "0").ok();
 
     let script_content = generate_windows_script(
@@ -555,12 +551,12 @@ pub fn flash_image_privileged(
         panel_id,
         variant,
         &progress_file.to_string_lossy(),
-        &result_file.to_string_lossy(),
     );
     fs::write(&script_path, &script_content)
         .map_err(|e| format!("Cannot write flash script: {}", e))?;
 
-    // Step 3: Run elevated via UAC
+    // Step 3: Run PowerShell directly — app is already elevated via manifest,
+    // no Start-Process -Verb RunAs needed! CREATE_NO_WINDOW = no visible console.
     emit_progress(app, 60.0, "writing");
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -568,30 +564,11 @@ pub fn flash_image_privileged(
         app.clone(), progress_file.clone(), image_size, stop.clone(),
     );
 
-    // EncodedCommand avoids path escaping issues in the elevated process
-    let inner_cmd = format!(
-        "Set-ExecutionPolicy Bypass -Scope Process -Force; & '{}' *> '{}'",
-        script_path.display().to_string().replace('\'', "''"),
-        log_file.display().to_string().replace('\'', "''"),
-    );
-    let encoded = {
-        let utf16: Vec<u8> = inner_cmd.encode_utf16()
-            .flat_map(|c| c.to_le_bytes())
-            .collect();
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD.encode(&utf16)
-    };
-
-    // Outer launcher: Start-Process -Verb RunAs triggers UAC, -WindowStyle Hidden
-    // hides the elevated PowerShell window after the user accepts UAC.
-    let launcher_cmd = format!(
-        "try {{ $p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile','-EncodedCommand','{}'); if ($p) {{ exit $p.ExitCode }} else {{ exit 1 }} }} catch {{ exit 1 }}",
-        encoded
-    );
-
-    // CREATE_NO_WINDOW prevents the outer PowerShell from showing a console window
     let output = Command::new("powershell")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &launcher_cmd])
+        .args([
+            "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", script_path.to_str().unwrap_or(""),
+        ])
         .creation_flags(CREATE_NO_WINDOW)
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
@@ -603,51 +580,29 @@ pub fn flash_image_privileged(
     stop.store(true, Ordering::Relaxed);
     let _ = poll_handle.join();
 
-    // Check result via marker file (more reliable than exit code through UAC layers)
-    let result = fs::read_to_string(&result_file).unwrap_or_default();
-    let log_content = fs::read_to_string(&log_file).unwrap_or_default();
-
     // Cleanup temp files
-    for f in [&script_path, &progress_file, &result_file, &log_file] {
-        let _ = fs::remove_file(f);
-    }
+    let _ = fs::remove_file(&script_path);
+    let _ = fs::remove_file(&progress_file);
     if is_xz {
         let _ = fs::remove_file(&img_to_flash);
     }
 
-    // Success: the PS1 script writes "OK" to result_file on completion
-    if result.trim() == "OK" {
+    // Direct exit code check — reliable since there's no UAC layer in between
+    if output.status.success() {
         emit_progress(app, 95.0, "syncing");
         emit_progress(app, 100.0, "done");
         return Ok(());
     }
 
-    // Failure: check for user cancellation vs real error
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!("{}{}", log_content, stderr);
-    if combined.contains("canceled") || combined.contains("cancelled")
-        || combined.contains("The operation was canceled") {
-        return Err("cancelled".into());
-    }
-
-    let error_msg = if result.trim().is_empty() && log_content.trim().is_empty() {
-        if !stderr.trim().is_empty() {
-            stderr.trim().to_string()
-        } else {
-            "Flash process failed without error details".to_string()
-        }
-    } else if !result.trim().is_empty() && result.trim() != "OK" {
-        // Script caught an error and wrote it to result_file
-        result.trim().to_string()
-    } else {
-        log_content.trim().to_string()
-    };
-    Err(format!("Flash failed: {}", error_msg))
+    Err(format!("Flash failed: {}", stderr.trim()))
 }
 
-/// Generate a self-contained PowerShell script with all parameters embedded as
-/// absolute paths. This avoids any dependency on $env:TEMP matching between the
-/// non-elevated Rust process and the elevated UAC PowerShell context.
+/// Generate a PowerShell flash script using Rufus-inspired techniques:
+/// - Clear-Disk for proper volume lock + dismount + MBR/GPT clearing
+/// - .NET FileStream write with retry loop (4 attempts, 5s delay)
+/// - Write-retry with file pointer reposition on failure
+/// - Update-Disk for proper partition table refresh
 #[cfg(target_os = "windows")]
 fn generate_windows_script(
     image_path: &str,
@@ -656,9 +611,7 @@ fn generate_windows_script(
     panel_id: &str,
     variant: &str,
     progress_file: &str,
-    result_file: &str,
 ) -> String {
-    // Escape single quotes for PowerShell single-quoted strings (double them)
     let esc = |s: &str| s.replace('\'', "''");
     format!(
         r#"$ErrorActionPreference = "Stop"
@@ -669,18 +622,17 @@ try {{
     $PanelID = '{panel_id}'
     $Variant = '{variant}'
     $ProgressFile = '{progress}'
-    $ResultFile = '{result}'
 
     $diskNum = [int]([regex]::Match($Device, '\d+$').Value)
 
-    # Clean disk via diskpart (script file — pipe is unreliable in PS)
-    $dpScript = Join-Path $env:TEMP "archr-diskpart.txt"
-    @("select disk $diskNum", "clean") | Out-File -Encoding ascii $dpScript
-    & diskpart /s $dpScript 2>&1 | Out-Null
-    Remove-Item $dpScript -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 3
+    # Rufus technique: Clear-Disk handles volume lock, dismount, and MBR/GPT
+    # clearing in one call (equivalent to FSCTL_LOCK_VOLUME + FSCTL_DISMOUNT_VOLUME
+    # + zeroing MBR/GPT sectors that Rufus does manually).
+    Clear-Disk -Number $diskNum -RemoveData -RemoveOEM -Confirm:$false -ErrorAction Stop
+    Start-Sleep -Seconds 2
 
-    # Write raw image via .NET FileStream (retry on device lock)
+    # Write raw image via .NET FileStream
+    # Rufus technique: retry loop (4 attempts, 5s delay) with file pointer reposition
     $bufSize = 4 * 1024 * 1024
     $buf = New-Object byte[] $bufSize
     $totalWritten = [long]0
@@ -688,7 +640,7 @@ try {{
 
     $src = $null
     $dst = $null
-    for ($retry = 0; $retry -lt 3; $retry++) {{
+    for ($retry = 0; $retry -lt 4; $retry++) {{
         try {{
             $src = [System.IO.FileStream]::new(
                 $ImagePath,
@@ -707,14 +659,26 @@ try {{
             break
         }} catch {{
             if ($src) {{ $src.Dispose(); $src = $null }}
-            if ($retry -eq 2) {{ throw }}
-            Start-Sleep -Seconds 3
+            if ($retry -eq 3) {{ throw }}
+            Start-Sleep -Seconds 5
         }}
     }}
 
     try {{
         while (($read = $src.Read($buf, 0, $bufSize)) -gt 0) {{
-            $dst.Write($buf, 0, $read)
+            # Rufus technique: write with retry + reposition on failure
+            $written = $false
+            for ($wr = 0; $wr -lt 4; $wr++) {{
+                try {{
+                    $dst.Write($buf, 0, $read)
+                    $written = $true
+                    break
+                }} catch {{
+                    if ($wr -eq 3) {{ throw }}
+                    Start-Sleep -Seconds 5
+                    $dst.Position = $totalWritten
+                }}
+            }}
             $totalWritten += $read
             if ($lastReport.ElapsedMilliseconds -ge 500) {{
                 [System.IO.File]::WriteAllText($ProgressFile, $totalWritten.ToString())
@@ -727,11 +691,8 @@ try {{
         if ($dst) {{ $dst.Dispose() }}
     }}
 
-    # Rescan to detect new partition table
-    $dpScript2 = Join-Path $env:TEMP "archr-diskpart2.txt"
-    "rescan" | Out-File -Encoding ascii $dpScript2
-    & diskpart /s $dpScript2 2>&1 | Out-Null
-    Remove-Item $dpScript2 -Force -ErrorAction SilentlyContinue
+    # Rufus technique: IOCTL_DISK_UPDATE_PROPERTIES equivalent
+    Update-Disk -Number $diskNum -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 3
 
     # Find and mount boot partition
@@ -776,12 +737,8 @@ try {{
         $enc
     )
 
-    # Success marker — Rust checks this file instead of relying on exit codes through UAC
-    [System.IO.File]::WriteAllText($ResultFile, "OK")
     exit 0
 }} catch {{
-    # Write error to result file so Rust can show it to the user
-    try {{ [System.IO.File]::WriteAllText($ResultFile, $_.Exception.Message) }} catch {{}}
     Write-Error $_.Exception.Message
     exit 1
 }}
@@ -792,6 +749,5 @@ try {{
         panel_id = esc(panel_id),
         variant = esc(variant),
         progress = esc(progress_file),
-        result = esc(result_file),
     )
 }
