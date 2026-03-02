@@ -196,8 +196,15 @@ pub fn flash_image_privileged(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("[flash] script exit code: {:?}", output.status.code());
+        eprintln!("[flash] stderr: {}", stderr);
         if stderr.contains("dismissed") || stderr.contains("Not authorized") {
             return Err("cancelled".into());
+        }
+        // Pass dd error through directly so frontend shows the real cause
+        let stderr = stderr.trim();
+        if stderr.starts_with("dd failed:") {
+            return Err(format!("dd error: {}", &stderr[10..].trim()));
         }
         return Err(format!("Flash failed: {}", stderr));
     }
@@ -251,26 +258,31 @@ PANEL_ID="$4"
 VARIANT="$5"
 PROGRESS_FILE="$6"
 
-# RPi Imager technique: escalating unmount strategy
-# Try normal umount first, then lazy (MNT_DETACH), then force (MNT_FORCE)
+# Recreate progress file as root (fs.protected_regular=2 on Ubuntu blocks
+# root from writing to user-owned files in /tmp via O_CREAT)
+rm -f "$PROGRESS_FILE"
+echo "0" > "$PROGRESS_FILE"
+chmod 666 "$PROGRESS_FILE"
+
+# Aggressive unmount: udisksctl (tells desktop to release), then kernel umount
 for part in "${DEVICE}"*; do
     [ -b "$part" ] || continue
+    udisksctl unmount -b "$part" --no-user-interaction 2>/dev/null || true
     umount "$part" 2>/dev/null \
         || umount -l "$part" 2>/dev/null \
         || umount -f "$part" 2>/dev/null \
         || true
 done
-
-# Write raw image — try O_DIRECT first (bypasses page cache, like RPi Imager),
-# fall back to normal write if device doesn't support it (EINVAL on some readers)
-dd if="$IMAGE" of="$DEVICE" bs=4M oflag=direct conv=fsync status=none 2>/dev/null &
-DD_PID=$!
 sleep 1
-if ! kill -0 $DD_PID 2>/dev/null; then
-    # dd with O_DIRECT exited immediately — retry without it
-    dd if="$IMAGE" of="$DEVICE" bs=4M conv=fsync status=none &
-    DD_PID=$!
-fi
+
+# Flush kernel buffers and wipe FS signatures (prevents desktop auto-remount)
+blockdev --flushbufs "$DEVICE" 2>/dev/null || true
+wipefs -a "$DEVICE" 2>/dev/null || true
+
+# Write raw image (no O_DIRECT — not all readers support it)
+DD_ERR=$(mktemp)
+dd if="$IMAGE" of="$DEVICE" bs=4M conv=fsync status=none 2>"$DD_ERR" &
+DD_PID=$!
 
 # Monitor dd progress via /proc/fdinfo
 while kill -0 $DD_PID 2>/dev/null; do
@@ -282,7 +294,14 @@ while kill -0 $DD_PID 2>/dev/null; do
         fi
     fi
 done
-wait $DD_PID
+
+if ! wait $DD_PID; then
+    ERR=$(cat "$DD_ERR" 2>/dev/null)
+    rm -f "$DD_ERR"
+    echo "dd failed: $ERR" >&2
+    exit 1
+fi
+rm -f "$DD_ERR"
 
 sync
 
@@ -310,8 +329,11 @@ if [ ! -f "$MOUNT_DIR/$PANEL_DTB" ]; then
 fi
 cp "$MOUNT_DIR/$PANEL_DTB" "$MOUNT_DIR/kernel.dtb"
 
+# Remove all pre-merged panel DTBs — only kernel.dtb should remain
+rm -f "$MOUNT_DIR"/kernel-*.dtb
+
 # Write panel configuration
-printf 'PanelNum=%s\nPanelDTB=%s\n' "$PANEL_ID" "$PANEL_DTB" > "$MOUNT_DIR/panel.txt"
+printf 'PanelNum=%s\nPanelDTB=kernel.dtb\n' "$PANEL_ID" > "$MOUNT_DIR/panel.txt"
 echo "confirmed" > "$MOUNT_DIR/panel-confirmed"
 echo "$VARIANT" > "$MOUNT_DIR/variant"
 
@@ -498,8 +520,11 @@ if [ ! -f "$BOOT_VOL/$PANEL_DTB" ]; then
 fi
 cp "$BOOT_VOL/$PANEL_DTB" "$BOOT_VOL/kernel.dtb"
 
+# Remove all pre-merged panel DTBs — only kernel.dtb should remain
+rm -f "$BOOT_VOL"/kernel-*.dtb
+
 # Write panel configuration
-printf 'PanelNum=%s\nPanelDTB=%s\n' "$PANEL_ID" "$PANEL_DTB" > "$BOOT_VOL/panel.txt"
+printf 'PanelNum=%s\nPanelDTB=kernel.dtb\n' "$PANEL_ID" > "$BOOT_VOL/panel.txt"
 echo "confirmed" > "$BOOT_VOL/panel-confirmed"
 echo "$VARIANT" > "$BOOT_VOL/variant"
 
@@ -731,11 +756,14 @@ try {{
     }}
     Copy-Item $panelFile (Join-Path $bootDrive "kernel.dtb") -Force
 
+    # Remove all pre-merged panel DTBs — only kernel.dtb should remain
+    Get-ChildItem (Join-Path $bootDrive "kernel-*.dtb") -ErrorAction SilentlyContinue | Remove-Item -Force
+
     # Write panel configuration (UTF-8 no BOM)
     $enc = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText(
         (Join-Path $bootDrive "panel.txt"),
-        "PanelNum=$PanelID`nPanelDTB=$PanelDTB`n",
+        "PanelNum=$PanelID`nPanelDTB=kernel.dtb`n",
         $enc
     )
     [System.IO.File]::WriteAllText(

@@ -101,11 +101,24 @@ function setBusy(isBusy) {
 // ---------------------------------------------------------------------------
 function selectConsole(console) {
   if (busy) return;
+  const changed = selectedConsole !== console;
   selectedConsole = console;
   selectedPanel = null;
 
   btnOriginal.classList.toggle('active', console === 'original');
   btnClone.classList.toggle('active', console === 'clone');
+
+  // Show image section (step 2) now that console is chosen
+  $('image-section').style.display = '';
+
+  // Clear downloaded image when switching variant (wrong image for this console)
+  if (changed && imagePath) {
+    imagePath = null;
+    imageNameEl.textContent = t('no_image');
+    imageNameEl.setAttribute('data-i18n', 'no_image');
+    imageNameEl.style.color = '';
+    imageVersionEl.textContent = '';
+  }
 
   loadPanels(console);
   panelSection.style.display = '';
@@ -128,19 +141,11 @@ async function loadPanels(console) {
   panels.forEach(panel => {
     const opt = document.createElement('option');
     opt.value = JSON.stringify({ id: panel.id, dtb: panel.dtb });
-    const suffix = panel.is_default ? ` (${t('recommended')})` : '';
-    opt.textContent = panel.name + suffix;
-    if (panel.is_default) opt.selected = true;
+    opt.textContent = panel.name;
     panelSelect.appendChild(opt);
   });
 
-  // Auto-select default
-  const defaultPanel = panels.find(p => p.is_default);
-  if (defaultPanel) {
-    selectedPanel = defaultPanel;
-    panelSelect.value = JSON.stringify({ id: defaultPanel.id, dtb: defaultPanel.dtb });
-    onPanelSelected();
-  }
+  selectedPanel = null;
 }
 
 panelSelect.addEventListener('change', () => {
@@ -242,7 +247,7 @@ $('btn-download').addEventListener('click', async () => {
   setStatus(t('checking_version'), '');
 
   try {
-    const result = await window.__TAURI__.core.invoke('download_image');
+    const result = await window.__TAURI__.core.invoke('download_image', { variant: selectedConsole });
 
     imagePath = result.path;
     imageNameEl.textContent = result.image_name;
@@ -375,11 +380,15 @@ function translateError(msg) {
     [/write error|flush error/i, 'error_write_failed'],
     [/cannot open image/i, 'error_open_image'],
     [/cannot write helper|cannot set script|cannot write params|cannot create temp/i, 'error_prepare_flash'],
+    [/dd error:/i, null],  // show raw dd error, don't hide behind generic message
     [/flash failed/i, 'error_flash_failed'],
     [/invalid device|invalid disk/i, 'error_invalid_device'],
   ];
   for (const [regex, key] of patterns) {
-    if (regex.test(msg)) return t(key);
+    if (regex.test(msg)) {
+      if (key === null) break;  // fall through to show raw error
+      return t(key);
+    }
   }
   return t('error') + ': ' + msg;
 }
@@ -389,18 +398,7 @@ function translateError(msg) {
 // ---------------------------------------------------------------------------
 async function init() {
   await initI18n();
-  checkLatestVersion(); // fire-and-forget (does not block UI)
   checkForAppUpdate();  // fire-and-forget (check for flasher app update)
-}
-
-async function checkLatestVersion() {
-  try {
-    const release = await window.__TAURI__.core.invoke('check_latest_release');
-    imageVersionEl.textContent = release.version;
-    setStatus(t('latest_version', { version: release.version }), '');
-  } catch (_) {
-    // offline or error — ignore silently
-  }
 }
 
 async function checkForAppUpdate() {

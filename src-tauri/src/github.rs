@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter};
 
 const REPO_API: &str = "https://api.github.com/repos/archr-linux/Arch-R/releases/latest";
-const IMAGE_PREFIX: &str = "ArchR-R36S-no-panel-";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ReleaseInfo {
@@ -44,7 +43,7 @@ struct GithubAsset {
     size: u64,
 }
 
-pub async fn get_latest_release() -> Result<ReleaseInfo, String> {
+pub async fn get_latest_release(variant: &str) -> Result<ReleaseInfo, String> {
     let client = reqwest::Client::builder()
         .user_agent("archr-flasher")
         .build()
@@ -59,11 +58,22 @@ pub async fn get_latest_release() -> Result<ReleaseInfo, String> {
         .await
         .map_err(|e| format!("JSON parse error: {}", e))?;
 
+    // Match image by variant (all images include all panel DTBs):
+    //   original → ArchR-R36S-YYYYMMDD.img.xz
+    //   clone    → ArchR-R36S-clone-YYYYMMDD.img.xz
     let asset = release
         .assets
         .iter()
-        .find(|a| a.name.starts_with(IMAGE_PREFIX) && a.name.ends_with(".img.xz"))
-        .ok_or("No no-panel image found in latest release")?;
+        .find(|a| {
+            if !a.name.ends_with(".img.xz") {
+                return false;
+            }
+            match variant {
+                "clone" => a.name.starts_with("ArchR-R36S-clone-"),
+                _ => a.name.starts_with("ArchR-R36S-") && !a.name.starts_with("ArchR-R36S-clone-"),
+            }
+        })
+        .ok_or_else(|| format!("No image found for '{}' in latest release", variant))?;
 
     Ok(ReleaseInfo {
         version: release.tag_name,

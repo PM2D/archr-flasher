@@ -1,9 +1,9 @@
 [package]
 name = "archr-flasher"
-version = "0.1.5"
+version = "0.2.0"
 description = "Arch R SD Card Flasher"
 authors = ["Arch R Linux"]
-edition = "2021"
+edition = "2024"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

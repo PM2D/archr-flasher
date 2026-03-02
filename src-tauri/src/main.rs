@@ -29,14 +29,14 @@ fn list_disks() -> Vec<DiskInfo> {
 }
 
 #[tauri::command]
-async fn check_latest_release() -> Result<ReleaseInfo, String> {
-    github::get_latest_release().await
+async fn check_latest_release(variant: String) -> Result<ReleaseInfo, String> {
+    github::get_latest_release(&variant).await
 }
 
 /// Download the latest image to local cache (or return cached path).
 #[tauri::command]
-async fn download_image(app: tauri::AppHandle) -> Result<DownloadResult, String> {
-    let release = github::get_latest_release().await?;
+async fn download_image(app: tauri::AppHandle, variant: String) -> Result<DownloadResult, String> {
+    let release = github::get_latest_release(&variant).await?;
 
     let cache_dir = app.path().app_cache_dir()
         .map_err(|e| format!("Cache dir error: {}", e))?;
