@@ -27,6 +27,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -38,6 +39,17 @@
     "macOS": {
       "signingIdentity": null,
       "entitlements": null
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "PLACEHOLDER_GERAR_COM_CARGO_TAURI_SIGNER",
+      "endpoints": [
+        "https://github.com/archr-linux/archr-flasher/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

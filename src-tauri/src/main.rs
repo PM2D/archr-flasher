@@ -10,6 +10,7 @@ use disk::DiskInfo;
 use github::{DownloadResult, ReleaseInfo};
 use panels::Panel;
 use tauri::Manager;
+use tauri_plugin_updater::UpdaterExt;
 
 /// Returns the OS locale (e.g. "pt-BR", "en-US") for i18n.
 #[tauri::command]
@@ -78,10 +79,55 @@ async fn flash_image(
     Ok("Flash complete".into())
 }
 
+/// Check if a new version of the Flasher app is available.
+/// Returns "version|body" string if update available, null if up to date.
+#[tauri::command]
+async fn check_app_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let update = app.updater_builder()
+        .build()
+        .map_err(|e| format!("{}", e))?
+        .check()
+        .await
+        .map_err(|e| format!("{}", e))?;
+
+    match update {
+        Some(u) => Ok(Some(format!("{}|{}", u.version, u.body.unwrap_or_default()))),
+        None => Ok(None),
+    }
+}
+
+/// Download and install the app update, then restart.
+#[tauri::command]
+async fn install_app_update(app: tauri::AppHandle) -> Result<(), String> {
+    let update = app.updater_builder()
+        .build()
+        .map_err(|e| format!("{}", e))?
+        .check()
+        .await
+        .map_err(|e| format!("{}", e))?;
+
+    if let Some(update) = update {
+        update.download_and_install(|_, _| {}, || {})
+            .await
+            .map_err(|e| format!("{}", e))?;
+        app.restart();
+    }
+
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .setup(|app| {
+            #[cfg(desktop)]
+            app.handle().plugin(
+                tauri_plugin_updater::Builder::new().build()
+            )?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_locale,
             get_panels,
@@ -89,6 +135,8 @@ fn main() {
             check_latest_release,
             download_image,
             flash_image,
+            check_app_update,
+            install_app_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -42,5 +42,8 @@
   "error_checksum_failed": "校验和验证失败。请重新下载镜像。",
   "verifying_checksum": "正在验证校验和...",
   "latest_version": "最新：{version}",
-  "offline": "离线"
+  "offline": "离线",
+  "app_update_title": "有更新可用",
+  "app_update_text": "版本 {version} 可用。立即更新？",
+  "app_updating": "正在更新..."
 }

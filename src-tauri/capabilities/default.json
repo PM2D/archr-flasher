@@ -7,6 +7,9 @@
     "core:default",
     "shell:allow-open",
     "dialog:allow-open",
-    "dialog:default"
+    "dialog:default",
+    "dialog:allow-ask",
+    "updater:default",
+    "process:allow-restart"
   ]
 }

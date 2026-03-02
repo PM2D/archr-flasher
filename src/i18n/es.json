@@ -42,5 +42,8 @@
   "error_checksum_failed": "Verificacion de checksum fallo. Descargue la imagen nuevamente.",
   "verifying_checksum": "Verificando checksum...",
   "latest_version": "Ultima: {version}",
-  "offline": "Sin conexion"
+  "offline": "Sin conexion",
+  "app_update_title": "Actualizacion disponible",
+  "app_update_text": "Version {version} disponible. Actualizar ahora?",
+  "app_updating": "Actualizando..."
 }

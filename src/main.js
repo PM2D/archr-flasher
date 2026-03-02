@@ -381,6 +381,7 @@ function translateError(msg) {
 async function init() {
   await initI18n();
   checkLatestVersion(); // fire-and-forget (does not block UI)
+  checkForAppUpdate();  // fire-and-forget (check for flasher app update)
 }
 
 async function checkLatestVersion() {
@@ -388,6 +389,25 @@ async function checkLatestVersion() {
     const release = await window.__TAURI__.core.invoke('check_latest_release');
     imageVersionEl.textContent = release.version;
     setStatus(t('latest_version', { version: release.version }), '');
+  } catch (_) {
+    // offline or error — ignore silently
+  }
+}
+
+async function checkForAppUpdate() {
+  try {
+    const result = await window.__TAURI__.core.invoke('check_app_update');
+    if (!result) return;
+
+    const [version, ...rest] = result.split('|');
+    const yes = await window.__TAURI__.dialog.ask(
+      t('app_update_text', { version }),
+      { title: t('app_update_title'), kind: 'info' }
+    );
+    if (!yes) return;
+
+    setStatus(t('app_updating'), '');
+    await window.__TAURI__.core.invoke('install_app_update');
   } catch (_) {
     // offline or error — ignore silently
   }
