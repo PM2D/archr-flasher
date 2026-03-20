@@ -36,6 +36,38 @@ Get the latest release for your platform from [Releases](https://github.com/arch
 
 ## Usage
 
+### Overlays
+
+| Boards                         | Variation           | Overlays                                |
+|--------------------------------|---------------------|-----------------------------------------|
+| R36S-V12 2023-08-18            | Original            | panel0.dtbo                             |
+| R36S-Y02 2024-11-27            | Original            | unknown                                 |
+| R36S-Y02 2025-02-18            | Original            | panel0.dtbo                             |
+| Y3506_V03_20241210             | SoySauce / Original | panel5.dtbo / panel6.dtbo               |
+| Y3506_V03_20241104             | SoySauce / Original | unknown                                 |
+| Y3506_V03_20250317             | SoySauce / Original | panel6.dtbo                             |
+| Y3506_V04_20250529             | SoySauce / Original | panel6.dtbo                             |
+| 2025-07-22_1402                | SoySauce / Original | panel6.dtbo                             |
+| Y3506_V05_20251215 \| 2551     | SoySauce / Original | panel5.dtbo                             |
+| Y3506_V05_20251215 \| 2601     | SoySauce / Original | unknown                                 |
+| R36S-V21 2024-12-18            | Original            | panel4.dtbo                             |
+| R36S-V22 2024-12-18            | Original            | panel4v22.dtbo                          |
+| RK3326-D3                      | Unknown             | panel4.dtbo                             |
+| R36S-V30 2025-10-18            | Original            | unknown                                 |
+| G80C-MB V1.1-20250319          | Clone               | clone_panel_8.dtbo                      |
+| G80CA-MB V1.2-20250422         | Clone               | clone_panel_8.dtbo / clone_panel_9.dtbo |
+| G80CA-MB V1.2-20250423         | Clone               | clone_panel_8.dtbo / clone_panel_9.dtbo |
+| G80CA-MB V1.3-20251212         | Clone               | clone_panel_8.dtbo / clone_panel_9.dtbo |
+| G80D-MB V1.0-20250609          | Clone               | clone_panel_10.dtbo                     |
+| R36S-V12                       | Clone               | clone_panel_8.dtbo                      |
+| R36S-V20 2025-05-18            | Clone               | clone_panel_1.dtbo / clone_panel_3.dtbo |
+| R36S-V20 2025-09-18            | Clone               | unknown                                 |
+| R36S-V12 2023-08-18 variant 1  | Clone               | clone_panel_4.dtbo                      |
+| R36S-V12 2023-08-18 variant 2  | Clone               | clone_panel_2.dtbo                      |
+| R36S-V12 2023-08-18 variant 3A | Clone               | unknown                                 |
+| R36S-V12 2023-08-18 variant 3  | Clone               | clone_panel_1.dtbo                      |
+| R36S-Power-MB 01 - 060625      | Clone               | clone_panel_8.dtbo                      |
+
 ### Flash Tab
 
 1. Select console type -- **R36S Original** (12 panels) or **R36S Clone** (12 panels)
