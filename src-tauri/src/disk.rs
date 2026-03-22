@@ -228,45 +228,60 @@ pub fn list_removable_disks() -> Vec<DiskInfo> {
 
 #[cfg(target_os = "windows")]
 pub fn list_removable_disks() -> Vec<DiskInfo> {
+    use std::os::windows::process::CommandExt;
     use std::process::Command;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
 
     let mut disks = Vec::new();
 
-    // Use PowerShell to list removable disks
-    let output = Command::new("powershell")
-        .args([
-            "-NoProfile", "-Command",
-            "Get-Disk | Where-Object { ($_.BusType -eq 'USB' -or $_.BusType -eq 'SD') -and $_.IsSystem -eq $false -and $_.IsBoot -eq $false } | Select-Object Number, FriendlyName, Size | ConvertTo-Json"
-        ])
-        .output();
+    // Try Get-Disk first (requires WMI), fall back to WMI direct query
+    let ps_commands = [
+        // Primary: Get-Disk (Storage module)
+        "Get-Disk | Where-Object { ($_.BusType -eq 'USB' -or $_.BusType -eq 'SD') -and $_.IsSystem -eq $false -and $_.IsBoot -eq $false } | Select-Object Number, FriendlyName, Size | ConvertTo-Json",
+        // Fallback: WMI Win32_DiskDrive (works even when Storage module is unavailable)
+        "Get-CimInstance Win32_DiskDrive | Where-Object { $_.InterfaceType -eq 'USB' -or $_.MediaType -like '*Removable*' } | Select-Object @{N='Number';E={$_.Index}}, @{N='FriendlyName';E={$_.Caption}}, @{N='Size';E={$_.Size}} | ConvertTo-Json",
+    ];
 
-    let output = match output {
-        Ok(o) => o,
-        Err(_) => return disks,
-    };
+    for cmd in &ps_commands {
+        let output = Command::new("powershell")
+            .args(["-NoProfile", "-Command", cmd])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // Parse JSON output
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) {
-        let items = match &json {
-            serde_json::Value::Array(arr) => arr.clone(),
-            obj @ serde_json::Value::Object(_) => vec![obj.clone()],
-            _ => vec![],
+        let output = match output {
+            Ok(o) if o.status.success() => o,
+            _ => continue,
         };
 
-        for item in items {
-            let number = item.get("Number").and_then(|v| v.as_u64()).unwrap_or(0);
-            let name = item.get("FriendlyName").and_then(|v| v.as_str()).unwrap_or("SD Card");
-            let size_bytes = item.get("Size").and_then(|v| v.as_u64()).unwrap_or(0);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.trim().is_empty() {
+            continue;
+        }
 
-            if size_bytes > 0 && size_bytes <= 128 * 1_000_000_000 {
-                disks.push(DiskInfo {
-                    device: format!("\\\\.\\PhysicalDrive{}", number),
-                    name: format!("{} ({})", name, format_size(size_bytes)),
-                    size_bytes,
-                    size_human: format_size(size_bytes),
-                });
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
+            let items = match &json {
+                serde_json::Value::Array(arr) => arr.clone(),
+                obj @ serde_json::Value::Object(_) => vec![obj.clone()],
+                _ => vec![],
+            };
+
+            for item in items {
+                let number = item.get("Number").and_then(|v| v.as_u64()).unwrap_or(0);
+                let name = item.get("FriendlyName").and_then(|v| v.as_str()).unwrap_or("SD Card");
+                let size_bytes = item.get("Size").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                if size_bytes > 0 && size_bytes <= 128 * 1_000_000_000 {
+                    disks.push(DiskInfo {
+                        device: format!("\\\\.\\PhysicalDrive{}", number),
+                        name: format!("{} ({})", name, format_size(size_bytes)),
+                        size_bytes,
+                        size_human: format_size(size_bytes),
+                    });
+                }
+            }
+
+            if !disks.is_empty() {
+                break;
             }
         }
     }

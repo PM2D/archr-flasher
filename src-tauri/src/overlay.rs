@@ -30,22 +30,72 @@ const ARCHR_DIRS: &[&str] = &["dtbs", "overlays"];
 pub fn find_archr_partitions() -> Vec<String> {
     let mut results = Vec::new();
 
-    let mounts = fs::read_to_string("/proc/mounts").unwrap_or_default();
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mounts = fs::read_to_string("/proc/mounts").unwrap_or_default();
 
-    for line in mounts.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 3 {
-            continue;
+        for line in mounts.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 3 {
+                continue;
+            }
+            let mount_point = parts[1];
+            let fs_type = parts[2];
+
+            if fs_type != "vfat" {
+                continue;
+            }
+
+            if is_archr_boot(Path::new(mount_point)) {
+                results.push(mount_point.to_string());
+            }
         }
-        let mount_point = parts[1];
-        let fs_type = parts[2];
+    }
 
-        if fs_type != "vfat" {
-            continue;
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        use std::process::Command;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        // Use PowerShell to list all mounted volumes with drive letters and mount points
+        let output = Command::new("powershell")
+            .args([
+                "-NoProfile", "-Command",
+                r#"Get-Volume | Where-Object { $_.DriveType -eq 'Removable' -or $_.DriveType -eq 'Fixed' } | ForEach-Object { $dl = $_.DriveLetter; if ($dl) { Write-Output "${dl}:\" } }; Get-CimInstance Win32_Volume | Where-Object { $_.DriveLetter -or $_.Name } | ForEach-Object { if ($_.DriveLetter) { Write-Output "$($_.DriveLetter)\" } elseif ($_.Name) { Write-Output $_.Name } }"#,
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+
+        let mut seen = std::collections::HashSet::new();
+
+        // Parse PowerShell output (one path per line)
+        if let Ok(o) = output {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            for line in stdout.lines() {
+                let p = line.trim();
+                if p.is_empty() || seen.contains(p) {
+                    continue;
+                }
+                seen.insert(p.to_string());
+                if is_archr_boot(Path::new(p)) {
+                    results.push(p.to_string());
+                }
+            }
         }
 
-        if is_archr_boot(Path::new(mount_point)) {
-            results.push(mount_point.to_string());
+        // Fallback: scan all drive letters in case PowerShell failed
+        if results.is_empty() {
+            for letter in b'A'..=b'Z' {
+                let drive = format!("{}:\\", letter as char);
+                if seen.contains(&drive) {
+                    continue;
+                }
+                let path = Path::new(&drive);
+                if path.exists() && is_archr_boot(path) {
+                    results.push(drive);
+                }
+            }
         }
     }
 
